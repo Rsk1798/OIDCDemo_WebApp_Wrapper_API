@@ -1,0 +1,39 @@
+@model List<object>
+@{
+    ViewData["Title"] = "OpenID Configuration Check";
+}
+
+<div class="container mt-4">
+    <h2>OpenID Configuration Check Results</h2>
+
+    @foreach (var result in Model)
+    {
+        <div class="card mb-4">
+            <div class="card-header">
+                <h3>URL: @result.GetType().GetProperty("Url")?.GetValue(result)</h3>
+            </div>
+            <div class="card-body">
+                @if (result.GetType().GetProperty("Error") != null)
+                {
+                    <div class="alert alert-danger">
+                        Error: @result.GetType().GetProperty("Error")?.GetValue(result)
+                    </div>
+                }
+                else
+                {
+                    <div class="alert alert-success">
+                        Status Code: @result.GetType().GetProperty("StatusCode")?.GetValue(result)
+                    </div>
+                    <pre class="bg-light p-3">
+                        @result.GetType().GetProperty("Content")?.GetValue(result)
+                    </pre>
+                }
+            </div>
+        </div>
+    }
+
+    <div class="mt-4">
+        <a href="/" class="btn btn-primary">Back to Home</a>
+        <a href="/Home/Diagnostic" class="btn btn-info">View Diagnostic Info</a>
+    </div>
+</div> 

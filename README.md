@@ -1,0 +1,2 @@
+# OIDCDemoApp
+### OIDCDemoApp is a simple web application that demonstrates how to use OpenID Connect (OIDC) for authentication and authorization. It is built using C#, a lightweight web application framework of dotnet.

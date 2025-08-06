@@ -1,0 +1,68 @@
+@model dynamic
+@{
+    ViewData["Title"] = "MFA Status Check";
+}
+
+<div class="container mt-4">
+    <div class="card">
+        <div class="card-header">
+            <h2>MFA Status Check</h2>
+        </div>
+        <div class="card-body">
+            <div class="alert @(Model.IsMfaEnabled ? "alert-success" : "alert-warning")">
+                <h4 class="alert-heading">MFA Status</h4>
+                <p>MFA is @(Model.IsMfaEnabled ? "enabled" : "not enabled") for your account.</p>
+            </div>
+
+            <h4>User Information</h4>
+            <dl class="row">
+                <dt class="col-sm-3">User ID</dt>
+                <dd class="col-sm-9">@Model.UserId</dd>
+
+                <dt class="col-sm-3">User Principal Name</dt>
+                <dd class="col-sm-9">@Model.UserPrincipalName</dd>
+            </dl>
+
+            <h4>Available Authentication Methods</h4>
+            @if (Model.AvailableMethods != null && Model.AvailableMethods.Count > 0)
+            {
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Authentication Method</th>
+                            <th>Last Used</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var method in Model.AvailableMethods)
+                        {
+                            <tr>
+                                <td>@method.MethodType</td>
+                                <td>@method.LastUsed</td>
+                                <td>
+                                    <span class="badge @(method.IsEnabled ? "bg-success" : "bg-danger")">
+                                        @(method.IsEnabled ? "Enabled" : "Disabled")
+                                    </span>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+            else
+            {
+                <div class="alert alert-info">
+                    No authentication methods found.
+                </div>
+            }
+
+            @if (!Model.IsMfaEnabled)
+            {
+                <div class="mt-4">
+                    <a href="/Home/SetupMfa" class="btn btn-primary">Setup MFA</a>
+                </div>
+            }
+        </div>
+    </div>
+</div> 
