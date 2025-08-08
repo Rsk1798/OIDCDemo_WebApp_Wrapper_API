@@ -159,8 +159,8 @@ builder.Services.Configure<CookiePolicyOptions>(options =>
     options.Secure = CookieSecurePolicy.Always;
 });
 
-builder.Services.Configure<GraphServicePrincipalOptions>(
-    builder.Configuration.GetSection("GraphServicePrincipal"));
+builder.Services.Configure<AzureAdOptions>(
+    builder.Configuration.GetSection("AzureAd"));
 
 // Add Graph API client with custom configuration
 builder.Services.AddScoped(sp =>
@@ -260,7 +260,7 @@ public class SimpleAuthProvider : IAuthenticationProvider
     }
 
 
-    public async Task<string> GetAppOnlyTokenAsync(GraphServicePrincipalOptions options)
+    public async Task<string> GetAppOnlyTokenAsync(AzureAdOptions options)
     {
         var app = ConfidentialClientApplicationBuilder.Create(options.ClientId)
             .WithClientSecret(options.ClientSecret)

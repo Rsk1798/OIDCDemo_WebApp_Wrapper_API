@@ -48,7 +48,7 @@ namespace OIDCDemoApp.Models
             };
         }
 
-        public class GraphServicePrincipalOptions
+        public class AzureAdOptions
         {
             public string TenantId { get; set; }
             public string ClientId { get; set; }
