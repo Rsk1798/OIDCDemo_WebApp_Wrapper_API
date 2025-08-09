@@ -24,7 +24,7 @@ namespace OIDCDemoApp.Controllers;
 
 public class HomeController : Controller
 {
-    private readonly IOptions<GraphServicePrincipalOptions> _spnOptions;
+    private readonly IOptions<AzureAdOptions> _spnOptions;
     private readonly GraphServiceClient _graphClient;
     private readonly ILogger<HomeController> _logger;
     private readonly IConfiguration _configuration;
@@ -35,12 +35,12 @@ public class HomeController : Controller
     private const int LoginAttemptWindowMinutes = 15;
 
     public HomeController(
-        GraphServiceClient graphClient, 
+        GraphServiceClient graphClient,
         ILogger<HomeController> logger,
         IConfiguration configuration,
         IHttpClientFactory httpClientFactory,
         ITokenAcquisition tokenAcquisition,
-        IOptions<GraphServicePrincipalOptions> spnOptions)
+        IOptions<AzureAdOptions> spnOptions)
     {
         _graphClient = graphClient;
         _logger = logger;
@@ -131,65 +131,133 @@ public class HomeController : Controller
         AddSecurityHeaders();
         try
         {
-            // Get app-only token using SPN
+            // Get the current user's email from claims
+            var email = User.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value
+                       ?? User.FindFirst("preferred_username")?.Value
+                       ?? User.FindFirst("email")?.Value;
+
+            if (string.IsNullOrEmpty(email))
+            {
+                _logger.LogWarning("Failed to get current user email from claims");
+                return Error("Failed to retrieve user email from authentication claims");
+            }
+
+            _logger.LogInformation("Retrieving user profile for email: {Email}", email);
+
+            // Get app-only token using SPN for the wrapper API
             var spnOptions = _spnOptions.Value;
             var token = await GraphTokenHelper.GetAppOnlyTokenAsync(spnOptions);
-            var authProvider = new SimpleAuthProvider(token);
-            var graphClient = new GraphServiceClient(authProvider);
 
-            // Get user profile from Graph API with additional fields
-            var userId = User.FindFirst("http://schemas.microsoft.com/identity/claims/objectidentifier")?.Value;
-            var user = await graphClient.Users[userId].GetAsync(requestConfiguration => {
-                requestConfiguration.QueryParameters.Select = new[] {
-                    "id", "displayName", "givenName", "surname", "mail", "userPrincipalName",
-                    "streetAddress", "city", "state", "country", "postalCode"
+            // Create HTTP client for wrapper API call
+            using var httpClient = _httpClientFactory.CreateClient();
+            httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+            // Build the wrapper API URL
+            var apiUrl = $"https://b2crestapi-hydyhbdweeasb5bj.westeurope-01.azurewebsites.net/Graph/getUserByEmail?email={Uri.EscapeDataString(email)}";
+
+            _logger.LogInformation("Calling wrapper API: {ApiUrl}", apiUrl);
+
+            // Make GET request to wrapper API
+            var response = await httpClient.GetAsync(apiUrl);
+            var responseContent = await response.Content.ReadAsStringAsync();
+
+            _logger.LogInformation("Wrapper API response: {StatusCode}, Content length: {ContentLength}",
+                response.StatusCode, responseContent?.Length ?? 0);
+
+            if (response.IsSuccessStatusCode)
+            {
+                // Parse the JSON response
+                JsonElement userData;
+                try
+                {
+                    userData = System.Text.Json.JsonSerializer.Deserialize<JsonElement>(responseContent);
+                }
+                catch (System.Text.Json.JsonException ex)
+                {
+                    _logger.LogError(ex, "Failed to parse JSON response from wrapper API. Content: {Content}", responseContent);
+                    return Error("Failed to parse response from wrapper API");
+                }
+
+                // Create user profile from wrapper API data
+                var userProfile = new UserProfile
+                {
+                    Name = GetJsonPropertyValue(userData, "displayName") ?? GetJsonPropertyValue(userData, "name"),
+                    Email = GetJsonPropertyValue(userData, "mail") ?? GetJsonPropertyValue(userData, "userPrincipalName") ?? email,
+                    ObjectId = GetJsonPropertyValue(userData, "id") ?? GetJsonPropertyValue(userData, "objectId"),
+                    GivenName = GetJsonPropertyValue(userData, "givenName"),
+                    Surname = GetJsonPropertyValue(userData, "surname"),
+                    StreetAddress = GetJsonPropertyValue(userData, "streetAddress"),
+                    City = GetJsonPropertyValue(userData, "city"),
+                    StateProvince = GetJsonPropertyValue(userData, "state"),
+                    CountryOrRegion = GetJsonPropertyValue(userData, "country")
                 };
-            });
-            
-            if (user == null)
-            {
-                _logger.LogWarning("Graph API returned null user profile");
-                return Error("Failed to retrieve user profile from Graph API");
+
+                _logger.LogInformation("Successfully retrieved user profile from wrapper API: {DisplayName}", userProfile.Name);
+
+                // Get updated fields from TempData if available
+                if (TempData["UpdatedFields"] != null)
+                {
+                    var updatedFields = System.Text.Json.JsonSerializer.Deserialize<List<string>>(TempData["UpdatedFields"].ToString());
+                    userProfile.UpdatedFields = updatedFields;
+                }
+
+                return View(userProfile);
             }
-
-            // Create user profile from Graph API data
-            var userProfile = new UserProfile
+            else
             {
-                Name = user.DisplayName,
-                Email = user.Mail ?? user.UserPrincipalName,
-                ObjectId = user.Id,
-                GivenName = user.GivenName,
-                Surname = user.Surname,
-                StreetAddress = user.StreetAddress,
-                City = user.City,
-                StateProvince = user.State,
-                CountryOrRegion = user.Country
-            };
+                _logger.LogError("Wrapper API returned error. Status: {StatusCode}, Content: {Content}",
+                    response.StatusCode, responseContent);
 
-            // Get updated fields from TempData if available
-            if (TempData["UpdatedFields"] != null)
-            {
-                var updatedFields = System.Text.Json.JsonSerializer.Deserialize<List<string>>(TempData["UpdatedFields"].ToString());
-                userProfile.UpdatedFields = updatedFields;
+                var errorMessage = "Failed to retrieve user profile from wrapper API.";
+                try
+                {
+                    var error = System.Text.Json.JsonSerializer.Deserialize<GraphError>(responseContent);
+                    if (error?.Error != null)
+                    {
+                        errorMessage = $"Wrapper API Error: {error.Error.Message}";
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error parsing wrapper API error response");
+                }
+
+                return Error(errorMessage);
             }
-
-            return View(userProfile);
         }
-        catch (ServiceException ex)
+        catch (HttpRequestException ex)
         {
-            _logger.LogError(ex, "Graph API Service Exception");
-            var errorMessage = $"Graph API Error: {ex.Message}";
-            if (ex.ResponseHeaders != null)
-            {
-                errorMessage += $"\nResponse Headers: {string.Join(", ", ex.ResponseHeaders.Select(h => $"{h.Key}={h.Value}"))}";
-            }
-            return Error(errorMessage);
+            _logger.LogError(ex, "HTTP request exception when calling wrapper API");
+            return Error($"Failed to connect to wrapper API: {ex.Message}");
+        }
+        catch (System.Text.Json.JsonException ex)
+        {
+            _logger.LogError(ex, "JSON parsing exception when processing wrapper API response");
+            return Error($"Failed to parse wrapper API response: {ex.Message}");
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error accessing Graph API");
-            return Error($"Error accessing Graph API: {ex.Message}");
+            _logger.LogError(ex, "Unexpected error in Profile action");
+            return Error($"An unexpected error occurred: {ex.Message}");
         }
+    }
+
+    // Helper method to safely get JSON property values
+    private string GetJsonPropertyValue(JsonElement element, string propertyName)
+    {
+        try
+        {
+            if (element.TryGetProperty(propertyName, out var property))
+            {
+                return property.ValueKind == JsonValueKind.Null ? null : property.GetString();
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Error getting JSON property {PropertyName}", propertyName);
+        }
+        return null;
     }
 
     [Authorize]
@@ -199,7 +267,7 @@ public class HomeController : Controller
         {
             // Try to get user profile from Graph API
             var user = await _graphClient.Me.GetAsync();
-            
+
             if (user == null)
             {
                 _logger.LogWarning("Graph API returned null user profile");
@@ -349,7 +417,7 @@ public class HomeController : Controller
             if (user != null)
             {
                 _logger.LogInformation("User {DisplayName} signing out", user.DisplayName);
-                
+
                 try
                 {
                     // Revoke all refresh tokens for the user
@@ -436,83 +504,108 @@ public class HomeController : Controller
     {
         try
         {
-            // Get app-only token using SPN
+            // Get the current user's email from claims
+            var email = User.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value
+                       ?? User.FindFirst("preferred_username")?.Value
+                       ?? User.FindFirst("email")?.Value;
+
+            if (string.IsNullOrEmpty(email))
+            {
+                _logger.LogWarning("Failed to get current user email from claims");
+                return Error("Failed to retrieve user email from authentication claims");
+            }
+
+            _logger.LogInformation("Retrieving user profile for editing - email: {Email}", email);
+
+            // Get app-only token using SPN for the wrapper API
             var spnOptions = _spnOptions.Value;
             var token = await GraphTokenHelper.GetAppOnlyTokenAsync(spnOptions);
-            var authProvider = new SimpleAuthProvider(token);
-            var graphClient = new GraphServiceClient(authProvider);
 
-            // Get the current user's object ID from claims
-            var userId = User.FindFirst("http://schemas.microsoft.com/identity/claims/objectidentifier")?.Value;
-            if (string.IsNullOrEmpty(userId))
+            // Create HTTP client for wrapper API call
+            using var httpClient = _httpClientFactory.CreateClient();
+            httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+            // Build the wrapper API URL for getting user by email
+            var apiUrl = $"https://b2crestapi-hydyhbdweeasb5bj.westeurope-01.azurewebsites.net/Graph/getUserByEmail?email={Uri.EscapeDataString(email)}";
+
+            _logger.LogInformation("Calling wrapper API for edit profile: {ApiUrl}", apiUrl);
+
+            // Make GET request to wrapper API
+            var response = await httpClient.GetAsync(apiUrl);
+            var responseContent = await response.Content.ReadAsStringAsync();
+
+            _logger.LogInformation("Wrapper API response for edit profile: {StatusCode}, Content length: {ContentLength}",
+                response.StatusCode, responseContent?.Length ?? 0);
+
+            if (response.IsSuccessStatusCode)
             {
-                _logger.LogWarning("Failed to get current user object ID from claims");
-                return Error("Failed to retrieve user profile from Graph API");
-            }
+                // Parse the JSON response
+                JsonElement userData;
+                try
+                {
+                    userData = System.Text.Json.JsonSerializer.Deserialize<JsonElement>(responseContent);
+                }
+                catch (System.Text.Json.JsonException ex)
+                {
+                    _logger.LogError(ex, "Failed to parse JSON response from wrapper API for edit profile. Content: {Content}", responseContent);
+                    return Error("Failed to parse response from wrapper API");
+                }
 
-            // Get real-time user data from Graph API with specific fields
-            var user = await graphClient.Users[userId].GetAsync(requestConfiguration => {
-                requestConfiguration.QueryParameters.Select = new[] {
-                    "id",
-                    "displayName",
-                    "givenName",
-                    "surname",
-                    "mail",
-                    "userPrincipalName",
-                    "streetAddress",
-                    "city",
-                    "state",
-                    "country",
-                    "postalCode"
+                // Create user profile from wrapper API data
+                var userProfile = new UserProfile
+                {
+                    Name = GetJsonPropertyValue(userData, "displayName") ?? GetJsonPropertyValue(userData, "name"),
+                    Email = GetJsonPropertyValue(userData, "mail") ?? GetJsonPropertyValue(userData, "userPrincipalName") ?? email,
+                    ObjectId = GetJsonPropertyValue(userData, "id") ?? GetJsonPropertyValue(userData, "objectId"),
+                    GivenName = GetJsonPropertyValue(userData, "givenName"),
+                    Surname = GetJsonPropertyValue(userData, "surname"),
+                    StreetAddress = GetJsonPropertyValue(userData, "streetAddress"),
+                    City = GetJsonPropertyValue(userData, "city"),
+                    StateProvince = GetJsonPropertyValue(userData, "state"),
+                    CountryOrRegion = GetJsonPropertyValue(userData, "country")
                 };
-            });
-            
-            if (user == null)
-            {
-                _logger.LogWarning("Graph API returned null user profile");
-                return Error("Failed to retrieve user profile from Graph API");
+
+                _logger.LogInformation("Successfully retrieved user profile from wrapper API for editing: {DisplayName}", userProfile.Name);
+
+                return View(userProfile);
             }
-
-            _logger.LogInformation("Retrieved user data: {@UserData}", new {
-                DisplayName = user.DisplayName,
-                GivenName = user.GivenName,
-                Surname = user.Surname,
-                StreetAddress = user.StreetAddress,
-                City = user.City,
-                State = user.State,
-                Country = user.Country
-            });
-
-            // Create user profile from Graph API data
-            var userProfile = new UserProfile
+            else
             {
-                Name = user.DisplayName,
-                Email = user.Mail ?? user.UserPrincipalName,
-                ObjectId = user.Id,
-                GivenName = user.GivenName,
-                Surname = user.Surname,
-                StreetAddress = user.StreetAddress,
-                City = user.City,
-                StateProvince = user.State,
-                CountryOrRegion = user.Country
-            };
+                _logger.LogError("Wrapper API returned error for edit profile. Status: {StatusCode}, Content: {Content}",
+                    response.StatusCode, responseContent);
 
-            return View(userProfile);
+                var errorMessage = "Failed to retrieve user profile from wrapper API.";
+                try
+                {
+                    var error = System.Text.Json.JsonSerializer.Deserialize<GraphError>(responseContent);
+                    if (error?.Error != null)
+                    {
+                        errorMessage = $"Wrapper API Error: {error.Error.Message}";
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error parsing wrapper API error response for edit profile");
+                }
+
+                return Error(errorMessage);
+            }
         }
-        catch (ServiceException ex)
+        catch (HttpRequestException ex)
         {
-            _logger.LogError(ex, "Graph API Service Exception");
-            var errorMessage = $"Graph API Error: {ex.Message}";
-            if (ex.ResponseHeaders != null)
-            {
-                errorMessage += $"\nResponse Headers: {string.Join(", ", ex.ResponseHeaders.Select(h => $"{h.Key}={h.Value}"))}";
-            }
-            return Error(errorMessage);
+            _logger.LogError(ex, "HTTP request exception when calling wrapper API for edit profile");
+            return Error($"Failed to connect to wrapper API: {ex.Message}");
+        }
+        catch (System.Text.Json.JsonException ex)
+        {
+            _logger.LogError(ex, "JSON parsing exception when processing wrapper API response for edit profile");
+            return Error($"Failed to parse wrapper API response: {ex.Message}");
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error accessing Graph API");
-            return Error($"Error accessing Graph API: {ex.Message}");
+            _logger.LogError(ex, "Unexpected error in EditProfile action");
+            return Error($"An unexpected error occurred: {ex.Message}");
         }
     }
 
@@ -525,10 +618,10 @@ public class HomeController : Controller
         {
             _logger.LogInformation("Starting profile update for user");
             _logger.LogInformation("Model data: {@ModelData}", model);
-            
+
             // Clear any existing model state errors
             ModelState.Clear();
-            
+
             // Validate only required fields
             if (string.IsNullOrWhiteSpace(model.Name))
             {
@@ -543,35 +636,38 @@ public class HomeController : Controller
                 return View("EditProfile", model);
             }
 
-            // Get the current user's object ID from claims
-            var userId = User.FindFirst("http://schemas.microsoft.com/identity/claims/objectidentifier")?.Value;
-            if (string.IsNullOrEmpty(userId))
+            // Get the current user's email from claims
+            var email = User.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value
+                       ?? User.FindFirst("preferred_username")?.Value
+                       ?? User.FindFirst("email")?.Value;
+
+            if (string.IsNullOrEmpty(email))
             {
-                _logger.LogError("Failed to get current user object ID from claims");
+                _logger.LogError("Failed to get current user email from claims");
                 return Error("Failed to get current user information");
             }
 
-            // Get app-only token using SPN
+            // Get app-only token using SPN for the wrapper API
             var spnOptions = _spnOptions.Value;
             var token = await GraphTokenHelper.GetAppOnlyTokenAsync(spnOptions);
 
-            // Create update user object matching Microsoft Graph API format exactly
-            var updateUser = new
+            // Create update user object matching the wrapper API format
+            var updates = new Dictionary<string, object>
             {
-                displayName = model.Name,
-                givenName = model.GivenName,
-                surname = model.Surname,
-                streetAddress = model.StreetAddress,
-                city = model.City,
-                state = model.StateProvince,
-                country = model.CountryOrRegion
+                ["displayName"] = model.Name,
+                ["givenName"] = model.GivenName,
+                ["surname"] = model.Surname,
+                ["streetAddress"] = model.StreetAddress,
+                ["city"] = model.City,
+                ["state"] = model.StateProvince,
+                ["country"] = model.CountryOrRegion
             };
 
             // Log the update request
-            _logger.LogInformation("Preparing update request with data: {@UpdateData}", updateUser);
+            _logger.LogInformation("Preparing update request with data: {@UpdateData}", updates);
 
             // Convert to JSON
-            var jsonContent = System.Text.Json.JsonSerializer.Serialize(updateUser);
+            var jsonContent = System.Text.Json.JsonSerializer.Serialize(updates);
 
             // Create HTTP content
             var content = new StringContent(
@@ -580,36 +676,40 @@ public class HomeController : Controller
                 "application/json"
             );
 
-            // Create a new HttpClient
+            // Create HTTP client for wrapper API call
             using var httpClient = _httpClientFactory.CreateClient();
-            
-            // Set the base address for Microsoft Graph
-            httpClient.BaseAddress = new Uri("https://graph.microsoft.com/v1.0/");
-            
-            // Add the authorization header
             httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
-            
-            // Add additional headers
             httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
-            // Make PATCH request to Graph API for the user
-            var response = await httpClient.PatchAsync($"users/{userId}", content);
+            // Build the wrapper API URL for updating user by email
+            var apiUrl = $"https://b2crestapi-hydyhbdweeasb5bj.westeurope-01.azurewebsites.net/Graph/updateUserByEmail?email={Uri.EscapeDataString(email)}";
 
+            _logger.LogInformation("Calling wrapper API for profile update: {ApiUrl}", apiUrl);
+
+            // Make PATCH request to wrapper API
+            var request = new HttpRequestMessage(new HttpMethod("PATCH"), apiUrl)
+            {
+                Content = content
+            };
+            var response = await httpClient.SendAsync(request);
             var responseContent = await response.Content.ReadAsStringAsync();
+
+            _logger.LogInformation("Wrapper API response for profile update: {StatusCode}, Content length: {ContentLength}",
+                response.StatusCode, responseContent?.Length ?? 0);
 
             if (response.IsSuccessStatusCode)
             {
-                _logger.LogInformation("Successfully updated profile using direct Graph API call");
-                
+                _logger.LogInformation("Successfully updated profile using wrapper API");
+
                 // Store success message in TempData
                 TempData["SuccessMessage"] = "Profile updated successfully!";
-                
+
                 // Redirect to Profile action
                 return RedirectToAction("Profile");
             }
             else
             {
-                _logger.LogError("Failed to update profile. Status: {StatusCode}, Content: {Content}", 
+                _logger.LogError("Failed to update profile via wrapper API. Status: {StatusCode}, Content: {Content}",
                     response.StatusCode, responseContent);
 
                 var errorMessage = "Failed to update profile.";
@@ -618,21 +718,33 @@ public class HomeController : Controller
                     var error = System.Text.Json.JsonSerializer.Deserialize<GraphError>(responseContent);
                     if (error?.Error != null)
                     {
-                        errorMessage = $"Graph API Error: {error.Error.Message}";
+                        errorMessage = $"Wrapper API Error: {error.Error.Message}";
                     }
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Error parsing Graph API error response: {Message}", ex.Message);
+                    _logger.LogError(ex, "Error parsing wrapper API error response for profile update");
                 }
 
                 ModelState.AddModelError("", errorMessage);
                 return View("EditProfile", model);
             }
         }
+        catch (HttpRequestException ex)
+        {
+            _logger.LogError(ex, "HTTP request exception when calling wrapper API for profile update");
+            ModelState.AddModelError("", $"Failed to connect to wrapper API: {ex.Message}");
+            return View("EditProfile", model);
+        }
+        catch (System.Text.Json.JsonException ex)
+        {
+            _logger.LogError(ex, "JSON parsing exception when processing wrapper API response for profile update");
+            ModelState.AddModelError("", $"Failed to parse wrapper API response: {ex.Message}");
+            return View("EditProfile", model);
+        }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error in UpdateProfile action: {Message}", ex.Message);
+            _logger.LogError(ex, "Unexpected error in UpdateProfile action: {Message}", ex.Message);
             ModelState.AddModelError("", "An unexpected error occurred. Please try again.");
             return View("EditProfile", model);
         }
@@ -737,7 +849,7 @@ public class HomeController : Controller
         {
             // Get the access token
             string accessToken = await _tokenAcquisition.GetAccessTokenForUserAsync(
-                new[] { 
+                new[] {
                     "User.Read",
                     "User.ReadWrite.All",
                     "User.ReadBasic.All"
@@ -788,7 +900,7 @@ public class HomeController : Controller
         {
             var graphClient = await GetGraphClient();
             var user = await graphClient.Me.GetAsync();
-            
+
             // Get authentication methods
             var authMethods = await graphClient.Users[user.Id]
                 .Authentication.Methods.GetAsync();
@@ -984,7 +1096,7 @@ public class HomeController : Controller
 
     public static class GraphTokenHelper
     {
-        public static async Task<string> GetAppOnlyTokenAsync(UserProfile.GraphServicePrincipalOptions options)
+        public static async Task<string> GetAppOnlyTokenAsync(UserProfile.AzureAdOptions options)
         {
             var app = ConfidentialClientApplicationBuilder.Create(options.ClientId)
                 .WithClientSecret(options.ClientSecret)
