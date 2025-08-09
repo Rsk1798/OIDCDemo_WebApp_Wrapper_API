@@ -1010,25 +1010,23 @@ public class HomeController : Controller
             var spnOptions = _spnOptions.Value;
             var accessToken = await GraphTokenHelper.GetAppOnlyTokenAsync(spnOptions);
 
-            // Build the wrapper API URL
-            var apiUrl = $"https://externalid-restapi-hcbvbpeef6c8gbay.southeastasia-01.azurewebsites.net/CustomGraph/resetPasswordByEmail?email={Uri.EscapeDataString(email)}";
-
-            // Prepare the payload as expected by the wrapper API
-            var updateUser = new
+            // Build the wrapper API URL using the new endpoint format
+            var apiUrl = $"https://b2crestapi-hydyhbdweeasb5bj.westeurope-01.azurewebsites.net/Graph/resetPasswordByEmail?email={Uri.EscapeDataString(email)}";
+            
+            // Prepare the payload as expected by the new API format
+            var resetPasswordRequest = new
             {
-                passwordProfile = new
-                {
-                    password = NewPassword,
-                    forceChangePasswordNextSignIn = false
-                }
+                newPassword = NewPassword,
+                forceChangePasswordNextSignIn = true,
+                forceChangePasswordNextSignInWithMfa = true
             };
 
-            var jsonContent = JsonSerializer.Serialize(updateUser);
+            var jsonContent = JsonSerializer.Serialize(resetPasswordRequest);
             var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
 
             using var httpClient = _httpClientFactory.CreateClient();
             httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-            httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+            httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("*/*"));
 
             // Make the PATCH request to the wrapper API
             var request = new HttpRequestMessage(new HttpMethod("PATCH"), apiUrl)
