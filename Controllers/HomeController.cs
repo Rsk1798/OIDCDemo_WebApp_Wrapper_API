@@ -763,85 +763,92 @@ public class HomeController : Controller
         public string InnerError { get; set; }
     }
 
-    [Authorize]
-    [HttpPost]
-    [ValidateAntiForgeryToken]
-    public async Task<IActionResult> DeleteProfile()
+[Authorize]
+[HttpPost]
+[ValidateAntiForgeryToken]
+public async Task<IActionResult> DeleteProfile()
+{
+    try
     {
-        try
+        // Get the current user's email from claims
+        var email = User.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value
+                   ?? User.FindFirst("preferred_username")?.Value
+                   ?? User.FindFirst("email")?.Value;
+
+        if (string.IsNullOrEmpty(email))
         {
-            // Get the current user's object ID from claims
-            var userId = User.FindFirst("http://schemas.microsoft.com/identity/claims/objectidentifier")?.Value;
-            if (string.IsNullOrEmpty(userId))
+            _logger.LogError("Failed to get current user email from claims");
+            TempData["Error"] = "Failed to get user information. Please try again.";
+            return RedirectToAction(nameof(Profile));
+        }
+
+        // Get app-only token using SPN for the wrapper API
+        var spnOptions = _spnOptions.Value;
+        var token = await GraphTokenHelper.GetAppOnlyTokenAsync(spnOptions);
+
+        // Create HTTP client for wrapper API call
+        using var httpClient = _httpClientFactory.CreateClient();
+        httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        // Build the wrapper API URL for deleting user by email
+        var apiUrl = $"https://externalid-restapi-hcbvbpeef6c8gbay.southeastasia-01.azurewebsites.net/Graph/deleteUserByEmail?email={Uri.EscapeDataString(email)}";
+
+        _logger.LogInformation("Calling wrapper API for delete profile: {ApiUrl}", apiUrl);
+
+        // Make DELETE request to wrapper API
+        var response = await httpClient.DeleteAsync(apiUrl);
+        var responseContent = await response.Content.ReadAsStringAsync();
+
+        _logger.LogInformation("Wrapper API response for delete profile: {StatusCode}, Content length: {ContentLength}",
+            response.StatusCode, responseContent?.Length ?? 0);
+
+        if (response.IsSuccessStatusCode)
+        {
+            _logger.LogInformation("User with email {Email} was successfully deleted", email);
+
+            // Sign out the user after deletion
+            await HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+            await HttpContext.SignOutAsync(OpenIdConnectDefaults.AuthenticationScheme);
+
+            // Clear session
+            HttpContext.Session.Clear();
+
+            return RedirectToAction("Index", "Home");
+        }
+        else
+        {
+            _logger.LogError("Failed to delete user via wrapper API. Status: {StatusCode}, Content: {Content}",
+                response.StatusCode, responseContent);
+
+            string errorMessage = "Failed to delete account.";
+            try
             {
-                _logger.LogError("Failed to get current user object ID from claims");
-                TempData["Error"] = "Failed to get user information. Please try again.";
-                return RedirectToAction(nameof(Profile));
-            }
-
-            // Get app-only token using SPN
-            var spnOptions = _spnOptions.Value;
-            var token = await GraphTokenHelper.GetAppOnlyTokenAsync(spnOptions);
-
-            // Create HTTP client for direct Graph API call
-            using var httpClient = _httpClientFactory.CreateClient();
-            httpClient.BaseAddress = new Uri("https://graph.microsoft.com/v1.0/");
-            httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
-            httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-
-            // Make the DELETE request to the users endpoint
-            var response = await httpClient.DeleteAsync($"users/{userId}");
-            var responseContent = await response.Content.ReadAsStringAsync();
-
-            _logger.LogInformation($"Delete user response: {response.StatusCode}");
-            _logger.LogInformation($"Response content: {responseContent}");
-
-            if (response.IsSuccessStatusCode)
-            {
-                _logger.LogInformation("User {UserId} was successfully deleted", userId);
-
-                // Sign out the user after deletion
-                await HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
-                await HttpContext.SignOutAsync(OpenIdConnectDefaults.AuthenticationScheme);
-
-                // Clear session
-                HttpContext.Session.Clear();
-
-                return RedirectToAction("Index", "Home");
-            }
-            else
-            {
-                _logger.LogError("Failed to delete user. Status: {StatusCode}, Content: {Content}",
-                    response.StatusCode, responseContent);
-
-                string errorMessage = "Failed to delete account.";
-                try
+                var error = System.Text.Json.JsonSerializer.Deserialize<GraphError>(responseContent);
+                if (error?.Error != null)
                 {
-                    var error = System.Text.Json.JsonSerializer.Deserialize<GraphError>(responseContent);
-                    if (error?.Error != null)
+                    errorMessage = error.Error.Message;
+                    if (error.Error.Code == "Authorization_RequestDenied")
                     {
-                        errorMessage = error.Error.Message;
-                        if (error.Error.Code == "Authorization_RequestDenied")
-                        {
-                            errorMessage = "You don't have permission to delete the account. Please contact your administrator.";
-                        }
+                        errorMessage = "You don't have permission to delete the account. Please contact your administrator.";
                     }
                 }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Error parsing Graph API error response");
-                }
-                TempData["Error"] = errorMessage;
-                return RedirectToAction(nameof(Profile));
             }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error deleting user profile");
-            TempData["Error"] = "An unexpected error occurred. Please try again later.";
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error parsing wrapper API error response for delete profile");
+            }
+            TempData["Error"] = errorMessage;
             return RedirectToAction(nameof(Profile));
         }
     }
+    catch (Exception ex)
+    {
+        _logger.LogError(ex, "Error deleting user profile via wrapper API");
+        TempData["Error"] = "An unexpected error occurred. Please try again later.";
+        return RedirectToAction(nameof(Profile));
+    }
+}
 
     private async Task<GraphServiceClient> GetGraphClient()
     {
@@ -971,7 +978,7 @@ public class HomeController : Controller
     [Authorize]
     [HttpPost]
     [ValidateAntiForgeryToken]
-    public async Task<IActionResult> ResetPassword(string CurrentPassword, string NewPassword, string ConfirmPassword)
+    public async Task<IActionResult> ResetPassword(string NewPassword, string ConfirmPassword)
     {
         try
         {
@@ -1017,8 +1024,8 @@ public class HomeController : Controller
             var resetPasswordRequest = new
             {
                 newPassword = NewPassword,
-                forceChangePasswordNextSignIn = true,
-                forceChangePasswordNextSignInWithMfa = true
+                forceChangePasswordNextSignIn = false,
+                forceChangePasswordNextSignInWithMfa = false
             };
 
             var jsonContent = JsonSerializer.Serialize(resetPasswordRequest);
