@@ -23,16 +23,16 @@ namespace OIDCDemoApp.Models
         public string Surname { get; set; }
 
         [Display(Name = "Street Address")]
-        public string StreetAddress { get; set; }
+        public string? StreetAddress { get; set; }
 
         [Display(Name = "City")]
-        public string City { get; set; }
+        public string? City { get; set; }
 
         [Display(Name = "State/Province")]
-        public string StateProvince { get; set; }
+        public string? StateProvince { get; set; }
 
         [Display(Name = "Country/Region")]
-        public string CountryOrRegion { get; set; }
+        public string? CountryOrRegion { get; set; }
 
         public List<string> UpdatedFields { get; set; } = new List<string>();
 
@@ -54,5 +54,14 @@ namespace OIDCDemoApp.Models
             public string ClientId { get; set; }
             public string ClientSecret { get; set; }
         }
+
+        public class UserUpdateModel
+        {
+            public string firstName { get; set; }
+            public string lastName { get; set; }
+            public string DisplayName { get; set; }
+            // ... other fields
+        }
+
     }
 } 
