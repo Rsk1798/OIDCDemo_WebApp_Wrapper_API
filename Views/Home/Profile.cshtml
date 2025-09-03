@@ -107,7 +107,7 @@
 
     <div class="mt-3">
         <a asp-action="EditProfile" class="btn btn-primary">Edit Profile</a>
-
+@* 
         @{
             var isPasswordResetAllowed = ViewData["IsPasswordResetAllowed"] as bool? ?? false;
             var currentIdentityProvider = ViewData["CurrentIdentityProvider"] as string ?? "Unknown";
@@ -124,12 +124,12 @@
             <button type="button" class="btn btn-secondary" disabled title="Password reset is not available for @currentIdentityProvider identity provider">
                 <i class="fas fa-key"></i> Reset Password (Not Available)
             </button>
-        }
+        } *@
 
         <button type="button" class="btn btn-danger" data-bs-toggle="modal" data-bs-target="#deleteProfileModal">
             Delete Profile
         </button>
-
+@* 
         @if (!isPasswordResetAllowed)
         {
             <div class="alert alert-info mt-3">
@@ -137,7 +137,7 @@
                 <strong>Password Reset Information:</strong> Password reset is not available for users authenticated with <strong>@currentIdentityProvider</strong>.
                 For social identity providers (Google, Facebook, Apple, etc.), you need to reset your password through their respective platforms.
             </div>
-        }
+        } *@
     </div>
 </div>
 
