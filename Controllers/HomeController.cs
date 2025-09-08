@@ -749,7 +749,6 @@ public class HomeController : Controller
             return View("EditProfile", model);
         }
     }
-
     // Helper class for Graph API error responses
     private class GraphError
     {
@@ -792,7 +791,7 @@ public async Task<IActionResult> DeleteProfile()
         httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
         // Build the wrapper API URL for deleting user by email
-        var apiUrl = $"https://externalid-restapi-hcbvbpeef6c8gbay.southeastasia-01.azurewebsites.net/Graph/deleteUserByEmail?email={Uri.EscapeDataString(email)}";
+        var apiUrl = $"https://b2crestapi-hydyhbdweeasb5bj.westeurope-01.azurewebsites.net/Graph/deleteUserByEmail?email={Uri.EscapeDataString(email)}";
 
         _logger.LogInformation("Calling wrapper API for delete profile: {ApiUrl}", apiUrl);
 
@@ -1024,8 +1023,8 @@ public async Task<IActionResult> DeleteProfile()
             var resetPasswordRequest = new
             {
                 newPassword = NewPassword,
-                forceChangePasswordNextSignIn = false,
-                forceChangePasswordNextSignInWithMfa = false
+                //forceChangePasswordNextSignIn = false,
+                //forceChangePasswordNextSignInWithMfa = false
             };
 
             var jsonContent = JsonSerializer.Serialize(resetPasswordRequest);

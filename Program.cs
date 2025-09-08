@@ -37,8 +37,9 @@ builder.Services
         builder.Configuration.Bind("AzureAd", options);
 
         // Set up configuration
-        var tenantId = "volvogroupextiddev.onmicrosoft.com";//Test :-  "volvogroupextid.onmicrosoft.com";
-        
+        var tenantId = "volvogroupextiddev.onmicrosoft.com";      //QA :- "volvogroupextidqa.onmicrosoft.com";
+        //Dev :-  "volvogroupextiddev.onmicrosoft.com";
+
         // Use the generic CIAM authority format
         options.Authority = $"https://volvogroupextiddev.ciamlogin.com/{tenantId}";
         options.MetadataAddress = $"https://volvogroupextiddev.ciamlogin.com/{tenantId}/v2.0/.well-known/openid-configuration";
